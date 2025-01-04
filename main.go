@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+var peers = make(map[string]string)
+
 func listenForMessages(conn *net.UDPConn, wg *sync.WaitGroup) {
     defer wg.Done()
     
