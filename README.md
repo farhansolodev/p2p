@@ -7,11 +7,12 @@
 - Over WS, server sends Peer A's remote port to Peer B & vice-versa.
 - Both peers have EIM-NAT so punching another hole from the same source port, this time to the other peer, will reuse the same mapping (internal->external source port). The purpose of this hole is to allow filtering on the other peer's IP:port.
 - (Optional) Handshake between peers to confirm connection:
-  - Peer A sends hole punch, doesn't go through.
-  - Peer B sends hole punch, goes through.
-  - Peer A sends hole punch, goes through.
-  - Peer A sends handshake packet and waits for response.
-  - Peer B sends hole punch, goes through but gets ignored.
-  - Peer B sends handshake packet and waits for response.
-  - Peer B receives handshake packet, tells user that Peer A is connected.
-  - Peer A receives handshake packet, tells user that Peer B is connected.
+  1. Peer A sends hole punch, doesn't go through.
+  2. Peer B sends hole punch, goes through.
+  3. Peer A sends hole punch, goes through.
+  4. Peer A sends handshake packet and waits for response.
+  5. Peer B sends hole punch, goes through but gets ignored.
+  6. Peer B sends handshake packet and waits for response.
+  7. Peer B tells user that Peer A is connected if it receives handshake packet before timeout.
+  8. Peer A tells user that Peer B is connected if it receives handshake packet before timeout.
+  9. Keep repeating steps 7 & 8 and tell the user that the other peer is disconnected if the timeout is reached.
