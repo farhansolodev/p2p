@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
     "github.com/charmbracelet/lipgloss"
+    "github.com/charmbracelet/bubbles/textinput"
 )
 
 func sendPings(conn *net.UDPConn, remoteAddr *net.UDPAddr) {
@@ -44,7 +45,7 @@ type Model struct {
     peerMessages []Message
     userMessages []Message
     currentUserMessage Message
-    cursorPosition int
+    textInput textinput.Model
 }
 
 func sendMessage(conn *net.UDPConn, remoteAddr *net.UDPAddr, message string) tea.Cmd {
@@ -99,10 +100,18 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+    var cmd tea.Cmd
+
     switch msg := msg.(type) {
     case tea.KeyMsg:
         switch msg.Type {
         case tea.KeyEnter:
+
+            input := m.textInput.Value()
+            if input == "/quit" {
+                // m.done <- struct{}{}
+                return m, tea.Quit
+            }
             
             newMessage := Message{
                 time: time.Now(),
@@ -114,50 +123,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             // Add to userMessages and clear current message
             m.userMessages = append(m.userMessages, newMessage)
             m.currentUserMessage.text = ""
+            m.textInput.Reset()
             
             return m, sendMessage(m.conn, m.remoteAddr, newMessage.text)
 
         case tea.KeyCtrlC:
-            m.done <- struct{}{}
+            // m.done <- struct{}{}
             return m, tea.Quit
-        
-        case tea.KeyRight:
-            if m.cursorPosition < len(m.currentUserMessage.text) {
-                m.cursorPosition++
-            }
-            return m, nil
-        
-        case tea.KeyLeft:
-            if m.cursorPosition > 0 {
-                m.cursorPosition--
-            }
-            return m, nil
-        
-            
-        case tea.KeyBackspace:
-            if len(m.currentUserMessage.text) > 0 {
-                // m.currentUserMessage.text = m.currentUserMessage.text[:len(m.currentUserMessage.text)-1]
-                // remove character at cursor position of currentUserMessage.text
-                m.currentUserMessage.text = m.currentUserMessage.text[:m.cursorPosition-1] + m.currentUserMessage.text[m.cursorPosition:]
-                m.cursorPosition--
-            }
-            return m, nil
-        
-        case tea.KeyUp:
-            return m, nil
-        case tea.KeyDown:
-            return m, nil 
 
         // Handle regular typing
         default:
-            if msg.Alt { return m, nil }
+            // if msg.Alt { return m, nil }
             if msg.String() == "" { return m, nil }
-
-            // insert msg.String() at cursor position of currentUserMessage.text
-            m.currentUserMessage.text = m.currentUserMessage.text[:m.cursorPosition] + msg.String() + m.currentUserMessage.text[m.cursorPosition:]
-            m.cursorPosition++
-
-            return m, nil
+            m.currentUserMessage.text = m.textInput.Value() + msg.String()
+            m.textInput, cmd = m.textInput.Update(msg)
+            return m, cmd
         }
 
     // Handle incoming peer messages
@@ -185,18 +165,7 @@ func (m Model) View() string {
         output += fmt.Sprintf("[%s] %s:%d> %s\n", message.time.Format("15:04:05"), message.ip, message.port, message.text)
     }
 
-    s := ""
-    for i, char := range m.currentUserMessage.text {
-        if i == m.cursorPosition {
-            s += lipgloss.NewStyle().
-                Background(lipgloss.Color("205")).
-                Render(string(char))
-        } else {
-            s += string(char)
-        }
-    }
-
-    output += fmt.Sprintf("\n> %s", s)
+    output += fmt.Sprintf("\n%s", m.textInput.View())
 
     return output
 }
@@ -249,6 +218,16 @@ func main() {
     // Start the ping goroutine
     go sendPings(conn, remoteAddr)
 
+    ti := textinput.New()
+    ti.Placeholder = "Type something..."
+    ti.Focus()
+    ti.CharLimit = 156
+    ti.Width = 50
+    
+    // Customize the cursor
+    ti.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+    ti.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+
     if _, err := tea.NewProgram(Model{
         done: make(chan struct{}),
         localPort: *localPort,
@@ -260,7 +239,7 @@ func main() {
         currentUserMessage: Message{
             text: "",
         },
-        cursorPosition: 0,
+        textInput: ti,
     }).Run(); err != nil {
         fmt.Printf("Uh oh, there was an error: %v\n", err)
         os.Exit(1)
