@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+    "github.com/charmbracelet/lipgloss"
 )
 
 func sendPings(conn *net.UDPConn, remoteAddr *net.UDPAddr) {
@@ -43,6 +44,7 @@ type Model struct {
     peerMessages []Message
     userMessages []Message
     currentUserMessage Message
+    cursorPosition int
 }
 
 func sendMessage(conn *net.UDPConn, remoteAddr *net.UDPAddr, message string) tea.Cmd {
@@ -118,17 +120,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         case tea.KeyCtrlC:
             m.done <- struct{}{}
             return m, tea.Quit
+        
+        case tea.KeyRight:
+            if m.cursorPosition < len(m.currentUserMessage.text) {
+                m.cursorPosition++
+            }
+            return m, nil
+        
+        case tea.KeyLeft:
+            if m.cursorPosition > 0 {
+                m.cursorPosition--
+            }
+            return m, nil
+        
             
         case tea.KeyBackspace:
             if len(m.currentUserMessage.text) > 0 {
-                m.currentUserMessage.text = m.currentUserMessage.text[:len(m.currentUserMessage.text)-1]
+                // m.currentUserMessage.text = m.currentUserMessage.text[:len(m.currentUserMessage.text)-1]
+                // remove character at cursor position of currentUserMessage.text
+                m.currentUserMessage.text = m.currentUserMessage.text[:m.cursorPosition-1] + m.currentUserMessage.text[m.cursorPosition:]
+                m.cursorPosition--
             }
             return m, nil
+        
+        case tea.KeyUp:
+            return m, nil
+        case tea.KeyDown:
+            return m, nil 
 
         // Handle regular typing
         default:
             if msg.Alt { return m, nil }
-            m.currentUserMessage.text += msg.String()
+            if msg.String() == "" { return m, nil }
+
+            // insert msg.String() at cursor position of currentUserMessage.text
+            m.currentUserMessage.text = m.currentUserMessage.text[:m.cursorPosition] + msg.String() + m.currentUserMessage.text[m.cursorPosition:]
+            m.cursorPosition++
+
             return m, nil
         }
 
@@ -157,7 +185,18 @@ func (m Model) View() string {
         output += fmt.Sprintf("[%s] %s:%d> %s\n", message.time.Format("15:04:05"), message.ip, message.port, message.text)
     }
 
-    output += fmt.Sprintf("\n> %s", m.currentUserMessage.text)
+    s := ""
+    for i, char := range m.currentUserMessage.text {
+        if i == m.cursorPosition {
+            s += lipgloss.NewStyle().
+                Background(lipgloss.Color("205")).
+                Render(string(char))
+        } else {
+            s += string(char)
+        }
+    }
+
+    output += fmt.Sprintf("\n> %s", s)
 
     return output
 }
@@ -221,6 +260,7 @@ func main() {
         currentUserMessage: Message{
             text: "",
         },
+        cursorPosition: 0,
     }).Run(); err != nil {
         fmt.Printf("Uh oh, there was an error: %v\n", err)
         os.Exit(1)
