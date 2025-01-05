@@ -16,11 +16,13 @@ func sendPings(conn *net.UDPConn, remoteAddr *net.UDPAddr) {
     defer ticker.Stop()
     
     for {
-        <-ticker.C
-        _, err := conn.WriteToUDP([]byte("ping"), remoteAddr)
-        if err != nil {
-            // Silently continue on ping errors
-            continue
+        select {
+        case <-ticker.C:
+            _, err := conn.WriteToUDP([]byte("ping"), remoteAddr)
+            if err != nil {
+                // Silently continue on ping errors
+                continue
+            }
         }
     }
 }
@@ -33,6 +35,7 @@ type Message struct {
 }
 
 type Model struct {
+    done chan struct{}
     sub chan Message // where we'll receive message notifications
     conn *net.UDPConn
     remoteAddr *net.UDPAddr
@@ -49,22 +52,28 @@ func sendMessage(conn *net.UDPConn, remoteAddr *net.UDPAddr, message string) tea
     }
 }
 
-func listenForMessages(sub chan Message, conn *net.UDPConn) tea.Cmd {
+func listenForMessages(sub chan Message, conn *net.UDPConn, done chan struct{}) tea.Cmd {
 	return func() tea.Msg {
 		buffer := make([]byte, 1024)
         for {
-            n, addr, err := conn.ReadFromUDP(buffer)
-            if err != nil {
-                fmt.Printf("Error receiving data: %v\n", err)
-                continue
-            }
-            
-            if string(buffer[:n]) != "ping" {
-                sub <- Message{
-                    time: time.Now(),
-                    ip:   addr.IP.String(),
-                    port: addr.Port,
-                    text: string(buffer[:n]),
+            select {
+            case <-done:
+                return nil
+                
+            default:
+                n, addr, err := conn.ReadFromUDP(buffer)
+                if err != nil {
+                    fmt.Printf("Error receiving data: %v\n", err)
+                    continue
+                }
+                
+                if string(buffer[:n]) != "ping" {
+                    sub <- Message{
+                        time: time.Now(),
+                        ip:   addr.IP.String(),
+                        port: addr.Port,
+                        text: string(buffer[:n]),
+                    }
                 }
             }
         }
@@ -82,7 +91,7 @@ func waitForMessages(sub chan Message) tea.Cmd {
 
 func (m Model) Init() tea.Cmd {
     return tea.Batch(
-        listenForMessages(m.sub, m.conn),
+        listenForMessages(m.sub, m.conn, m.done),
         waitForMessages(m.sub),
     )
 }
@@ -107,6 +116,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             return m, sendMessage(m.conn, m.remoteAddr, newMessage.text)
 
         case tea.KeyCtrlC:
+            m.done <- struct{}{}
             return m, tea.Quit
             
         case tea.KeyBackspace:
@@ -196,11 +206,12 @@ func main() {
         fmt.Printf("Invalid remote IP address: %s\n", *remoteIP)
         os.Exit(1)
     }
-    
+
     // Start the ping goroutine
     go sendPings(conn, remoteAddr)
 
     if _, err := tea.NewProgram(Model{
+        done: make(chan struct{}),
         localPort: *localPort,
         conn: conn,
         remoteAddr: remoteAddr,
