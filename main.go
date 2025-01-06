@@ -8,17 +8,19 @@ import (
 	"sort"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-    "github.com/charmbracelet/lipgloss"
-    "github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/lipgloss"
 )
 
-func sendPings(conn *net.UDPConn, remoteAddr *net.UDPAddr) {
+func sendPings(conn *net.UDPConn, remoteAddr *net.UDPAddr, done chan struct {}) {
     ticker := time.NewTicker(1 * time.Second)
     defer ticker.Stop()
     
     for {
         select {
+        case <-done:
+			return
         case <-ticker.C:
             _, err := conn.WriteToUDP([]byte("ping"), remoteAddr)
             if err != nil {
@@ -62,11 +64,10 @@ func listenForMessages(sub chan Message, conn *net.UDPConn, done chan struct{}) 
             select {
             case <-done:
                 return nil
-                
             default:
+                conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
                 n, addr, err := conn.ReadFromUDP(buffer)
                 if err != nil {
-                    fmt.Printf("Error receiving data: %v\n", err)
                     continue
                 }
                 
@@ -106,10 +107,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     case tea.KeyMsg:
         switch msg.Type {
         case tea.KeyEnter:
-
             input := m.textInput.Value()
+            if input == "" { return m, nil }
             if input == "/quit" {
-                // m.done <- struct{}{}
+                close(m.done)
                 return m, tea.Quit
             }
             
@@ -128,13 +129,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             return m, sendMessage(m.conn, m.remoteAddr, newMessage.text)
 
         case tea.KeyCtrlC:
-            // m.done <- struct{}{}
+            close(m.done)
             return m, tea.Quit
 
         // Handle regular typing
         default:
             // if msg.Alt { return m, nil }
-            if msg.String() == "" { return m, nil }
             m.currentUserMessage.text = m.textInput.Value() + msg.String()
             m.textInput, cmd = m.textInput.Update(msg)
             return m, cmd
@@ -215,8 +215,10 @@ func main() {
         os.Exit(1)
     }
 
+    done := make(chan struct{})
+
     // Start the ping goroutine
-    go sendPings(conn, remoteAddr)
+    go sendPings(conn, remoteAddr, done)
 
     ti := textinput.New()
     ti.Placeholder = "Type something..."
@@ -229,7 +231,7 @@ func main() {
     ti.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
     if _, err := tea.NewProgram(Model{
-        done: make(chan struct{}),
+        done: done,
         localPort: *localPort,
         conn: conn,
         remoteAddr: remoteAddr,
