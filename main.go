@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -39,6 +40,7 @@ type Message struct {
 }
 
 type Model struct {
+    mu sync.Mutex
     done chan struct{}
     sub chan Message // where we'll receive message notifications
     conn *net.UDPConn
@@ -46,7 +48,7 @@ type Model struct {
     localPort int
     peerMessages []Message
     userMessages []Message
-    currentUserMessage Message
+    // currentUserMessage Message
     textInput textinput.Model
 }
 
@@ -93,16 +95,14 @@ func waitForMessages(sub chan Message) tea.Cmd {
 	}
 }
 
-func (m Model) Init() tea.Cmd {
+func (m *Model) Init() tea.Cmd {
     return tea.Batch(
         listenForMessages(m.sub, m.conn, m.done),
         waitForMessages(m.sub),
     )
 }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-    var cmd tea.Cmd
-
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     switch msg := msg.(type) {
     case tea.KeyMsg:
         switch msg.Type {
@@ -114,19 +114,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
                 return m, tea.Quit
             }
             
-            newMessage := Message{
-                time: time.Now(),
-                ip:   "localhost",
-                port: m.localPort,
-                text: m.currentUserMessage.text,
-            }
-            
-            // Add to userMessages and clear current message
-            m.userMessages = append(m.userMessages, newMessage)
-            m.currentUserMessage.text = ""
-            m.textInput.Reset()
-            
-            return m, sendMessage(m.conn, m.remoteAddr, newMessage.text)
+            m.mu.Lock()
+			m.userMessages = append(m.userMessages, Message{
+				time: time.Now(),
+				ip:   "localhost",
+				port: m.localPort,
+				text: input,
+			})
+			m.mu.Unlock()
+
+			m.textInput.Reset()
+			return m, sendMessage(m.conn, m.remoteAddr, input)
 
         case tea.KeyCtrlC:
             close(m.done)
@@ -134,15 +132,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
         // Handle regular typing
         default:
-            // if msg.Alt { return m, nil }
-            m.currentUserMessage.text = m.textInput.Value() + msg.String()
+            var cmd tea.Cmd
+            // m.currentUserMessage.text = m.textInput.Value() + msg.String()
             m.textInput, cmd = m.textInput.Update(msg)
             return m, cmd
         }
 
     // Handle incoming peer messages
     case Response:
-        m.peerMessages = append(m.peerMessages, Message(msg))
+        m.mu.Lock()
+		m.peerMessages = append(m.peerMessages, Message(msg))
+		m.mu.Unlock()
         return m, waitForMessages(m.sub)
 
     // Handle any other events
@@ -151,8 +151,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     }
 }
 
-func (m Model) View() string {
-    allMessages := append(m.peerMessages, m.userMessages...)
+func (m *Model) View() string {
+    m.mu.Lock()
+	defer m.mu.Unlock()
+
+	allMessages := append([]Message{}, append(m.peerMessages, m.userMessages...)...)
     
     // Sort the combined slice by timestamp
 	sort.Slice(allMessages, func(i, j int) bool {
@@ -230,7 +233,7 @@ func main() {
     ti.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
     ti.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
-    if _, err := tea.NewProgram(Model{
+    if _, err := tea.NewProgram(&Model{
         done: done,
         localPort: *localPort,
         conn: conn,
@@ -238,9 +241,9 @@ func main() {
         sub: make(chan Message),
         peerMessages: []Message{},
         userMessages: []Message{},
-        currentUserMessage: Message{
-            text: "",
-        },
+        // currentUserMessage: Message{
+        //     text: "",
+        // },
         textInput: ti,
     }).Run(); err != nil {
         fmt.Printf("Uh oh, there was an error: %v\n", err)
