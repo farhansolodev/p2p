@@ -52,6 +52,8 @@ type Model struct {
     textInput textinput.Model
 }
 
+var pinkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+
 func sendMessage(conn *net.UDPConn, remoteAddr *net.UDPAddr, message string) tea.Cmd {
     return func() tea.Msg {
         _, _ = conn.WriteToUDP([]byte(message), remoteAddr)
@@ -165,7 +167,15 @@ func (m *Model) View() string {
     // print every message like [timestamp] ip:port> text
     var output string
     for _, message := range allMessages {
-        output += fmt.Sprintf("[%s] %s:%d> %s\n", message.time.Format("15:04:05"), message.ip, message.port, message.text)
+        output += fmt.Sprintf("%s%s%s %s:%d%s %s\n", 
+            pinkStyle.Render("["), 
+            message.time.Format("15:04:05"), 
+            pinkStyle.Render("]"), 
+            message.ip, 
+            message.port, 
+            pinkStyle.Render(">"), 
+            message.text,
+        )
     }
 
     output += fmt.Sprintf("\n%s", m.textInput.View())
@@ -230,8 +240,8 @@ func main() {
     ti.Width = 50
     
     // Customize the cursor
-    ti.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
-    ti.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+    ti.Cursor.Style = pinkStyle
+    ti.PromptStyle = pinkStyle
 
     if _, err := tea.NewProgram(&Model{
         done: done,
