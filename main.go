@@ -6,15 +6,17 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-func sendPings(conn *net.UDPConn, remoteAddr *net.UDPAddr, done chan struct {}) {
+func punchHoles(conn *net.UDPConn, remoteAddr *net.UDPAddr, done chan struct {}) {
     ticker := time.NewTicker(1 * time.Second)
     defer ticker.Stop()
     
@@ -39,6 +41,8 @@ type Message struct {
     text string
 }
 
+type Response Message
+
 type Model struct {
     mu sync.Mutex
     done chan struct{}
@@ -48,8 +52,19 @@ type Model struct {
     localPort int
     peerMessages []Message
     userMessages []Message
-    // currentUserMessage Message
     textInput textinput.Model
+    discoveryAddr net.UDPAddr
+}
+
+type keyMap struct {
+	Escape key.Binding
+}
+
+var keys = keyMap{
+	Escape: key.NewBinding(
+		key.WithKeys("esc"),
+		key.WithHelp("esc", "close"),
+	),
 }
 
 var pinkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
@@ -67,11 +82,13 @@ func listenForMessages(sub chan Message, conn *net.UDPConn, done chan struct{}) 
         for {
             select {
             case <-done:
+                // stop listening
                 return nil
             default:
                 conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
                 n, addr, err := conn.ReadFromUDP(buffer)
                 if err != nil {
+                    // try again
                     continue
                 }
                 
@@ -88,13 +105,16 @@ func listenForMessages(sub chan Message, conn *net.UDPConn, done chan struct{}) 
 	}
 }
 
-type Response Message
-
 // A command that waits for the messages on a channel.
 func waitForMessages(sub chan Message) tea.Cmd {
 	return func() tea.Msg {
 		return Response(<-sub)
 	}
+}
+
+func requestAddress(conn *net.UDPConn, discoveryAddr net.UDPAddr) tea.Cmd {
+    _, _ = conn.WriteToUDP([]byte("whoami"), &discoveryAddr)
+    return nil
 }
 
 func (m *Model) Init() tea.Cmd {
@@ -115,11 +135,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
                 close(m.done)
                 return m, tea.Quit
             }
+
+            if input == "/getaddr" {
+                return m, requestAddress(m.conn, m.discoveryAddr)
+            }
             
             m.mu.Lock()
 			m.userMessages = append(m.userMessages, Message{
 				time: time.Now(),
-				ip:   "localhost",
+				ip:   pinkStyle.Render("(You)") + " localhost",
 				port: m.localPort,
 				text: input,
 			})
@@ -135,17 +159,34 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         // Handle regular typing
         default:
             var cmd tea.Cmd
-            // m.currentUserMessage.text = m.textInput.Value() + msg.String()
             m.textInput, cmd = m.textInput.Update(msg)
             return m, cmd
         }
 
     // Handle incoming peer messages
     case Response:
-        m.mu.Lock()
-		m.peerMessages = append(m.peerMessages, Message(msg))
-		m.mu.Unlock()
-        return m, waitForMessages(m.sub)
+        if strings.HasPrefix(msg.text, "addr:") {
+            var addr string
+            _, _ = fmt.Sscanf(msg.text, "addr:%s", &addr)
+            msg = Response{
+                time: msg.time,
+                ip: pinkStyle.Render("(SYSTEM)") + " " + msg.ip,
+                port: msg.port,
+                text: fmt.Sprintf("Your external address is %s", addr),
+            }
+            m.mu.Lock()
+            m.peerMessages = append(m.peerMessages, Message(msg))
+            m.mu.Unlock()
+            return m, tea.Batch(
+                sendMessage(m.conn, m.remoteAddr, fmt.Sprintf("%s My external address is %s", pinkStyle.Render("SYSTEM:"), addr)),
+                waitForMessages(m.sub),
+            )
+        } else {
+            m.mu.Lock()
+            m.peerMessages = append(m.peerMessages, Message(msg))
+            m.mu.Unlock()
+            return m, waitForMessages(m.sub)
+        }
 
     // Handle any other events
     default:
@@ -157,6 +198,8 @@ func (m *Model) View() string {
     m.mu.Lock()
 	defer m.mu.Unlock()
 
+    var output string
+
 	allMessages := append([]Message{}, append(m.peerMessages, m.userMessages...)...)
     
     // Sort the combined slice by timestamp
@@ -165,7 +208,6 @@ func (m *Model) View() string {
 	})
     
     // print every message like [timestamp] ip:port> text
-    var output string
     for _, message := range allMessages {
         output += fmt.Sprintf("%s%s%s %s:%d%s %s\n", 
             pinkStyle.Render("["), 
@@ -200,6 +242,12 @@ func main() {
         os.Exit(1)
     }
 
+    // Validate environment variables
+    discovery_ip := os.Getenv("discovery_ip"); if discovery_ip == "" { 
+        fmt.Println("EnvVarError: discovery_ip not set")
+        os.Exit(1)
+    }
+
     // Create a UDP address for the local endpoint
     localAddr := &net.UDPAddr{
         IP:   net.ParseIP("0.0.0.0"),
@@ -213,8 +261,6 @@ func main() {
         os.Exit(1)
     }
     defer conn.Close()
-    
-    // fmt.Printf("Successfully bound to port %d\n", *localPort)
     
     // Define the remote endpoint
     remoteAddr := &net.UDPAddr{
@@ -231,7 +277,7 @@ func main() {
     done := make(chan struct{})
 
     // Start the ping goroutine
-    go sendPings(conn, remoteAddr, done)
+    go punchHoles(conn, remoteAddr, done)
 
     ti := textinput.New()
     ti.Placeholder = "Type something..."
@@ -251,10 +297,11 @@ func main() {
         sub: make(chan Message),
         peerMessages: []Message{},
         userMessages: []Message{},
-        // currentUserMessage: Message{
-        //     text: "",
-        // },
         textInput: ti,
+        discoveryAddr: *&net.UDPAddr{
+            IP:   net.ParseIP(discovery_ip),
+            Port: 50000,
+        },
     }).Run(); err != nil {
         fmt.Printf("Uh oh, there was an error: %v\n", err)
         os.Exit(1)
