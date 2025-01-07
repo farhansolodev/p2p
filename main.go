@@ -222,7 +222,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				time: msg.time,
 				ip:   accentStyle.Render("(SYSTEM)") + " " + msg.ip,
 				port: msg.port,
-				text: fmt.Sprintf("Your external address is %s", addr),
+				text: addr,
 			}
 		}
 
