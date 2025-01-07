@@ -56,11 +56,9 @@ type Model struct {
 	discoveryAddr net.UDPAddr
 }
 
-type keyMap struct {
+var keys = struct {
 	Escape key.Binding
-}
-
-var keys = keyMap{
+}{
 	Escape: key.NewBinding(
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "close"),
@@ -138,19 +136,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 
-			m.mu.Lock()
-			m.userMessages = append(m.userMessages, Message{
-				time: time.Now(),
-				ip:   pinkStyle.Render("(You)") + " localhost",
-				port: m.localPort,
-				text: input,
-			})
-			m.mu.Unlock()
-
-			m.textInput.Reset()
-			if input == "/getaddr" {
+			switch input {
+			case "/getaddr":
+				m.textInput.Reset()
 				return m, requestAddress(m.conn, m.discoveryAddr)
-			} else {
+			default:
+				m.mu.Lock()
+				m.userMessages = append(m.userMessages, Message{
+					time: time.Now(),
+					ip:   pinkStyle.Render("(You)") + " localhost",
+					port: m.localPort,
+					text: input,
+				})
+				m.mu.Unlock()
+
+				m.textInput.Reset()
 				return m, sendMessage(m.conn, m.remoteAddr, input)
 			}
 
@@ -176,19 +176,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				port: msg.port,
 				text: fmt.Sprintf("Your external address is %s", addr),
 			}
-			m.mu.Lock()
-			m.peerMessages = append(m.peerMessages, Message(msg))
-			m.mu.Unlock()
-			return m, tea.Batch(
-				sendMessage(m.conn, m.remoteAddr, fmt.Sprintf("%s My external address is %s", pinkStyle.Render("SYSTEM:"), addr)),
-				waitForMessages(m.sub),
-			)
-		} else {
-			m.mu.Lock()
-			m.peerMessages = append(m.peerMessages, Message(msg))
-			m.mu.Unlock()
-			return m, waitForMessages(m.sub)
+			// m.mu.Lock()
+			// m.peerMessages = append(m.peerMessages, Message(msg))
+			// m.mu.Unlock()
+			// return m, tea.Batch(
+			// 	sendMessage(m.conn, m.remoteAddr, fmt.Sprintf("%s My external address is %s", pinkStyle.Render("SYSTEM:"), addr)),
+			// 	waitForMessages(m.sub),
+			// )
+			// } else {
 		}
+		m.mu.Lock()
+		m.peerMessages = append(m.peerMessages, Message(msg))
+		m.mu.Unlock()
+		return m, waitForMessages(m.sub)
 
 	// Handle any other events
 	default:
