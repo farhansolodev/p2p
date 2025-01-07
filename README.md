@@ -7,7 +7,7 @@
 - github.com/charmbracelet/bubbletea
 - github.com/atotto/clipboard
 
-## Thanks to:
+## Special thanks to:
 
 - [Akilan](https://github.com/akilan1999) for introducing me to UDP hole punching
 - [This brilliant write up](https://www.netmanias.com/ko/post/blog/6263/nat-network-protocol-p2p/p2p-nat-nat-traversal-technic-rfc-5128-part-2-udp-hole-punching) on NAT traversal by 유창모 (Changmo Yoo)
