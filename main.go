@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -44,16 +45,20 @@ type Message struct {
 type Response Message
 
 type Model struct {
-	mu            sync.Mutex    // Protects concurrent access to messages
-	done          chan struct{} // Signals shutdown to background goroutines
-	sub           chan Message  // Channel for receiving message notifications
-	conn          *net.UDPConn
-	remoteAddr    *net.UDPAddr
-	localPort     int
-	peerMessages  []Message
-	userMessages  []Message
-	textInput     textinput.Model
-	discoveryAddr net.UDPAddr
+	mu                  sync.Mutex    // Protects concurrent access to messages
+	done                chan struct{} // Signals shutdown to background goroutines
+	sub                 chan Message  // Channel for receiving message notifications
+	conn                *net.UDPConn
+	remoteAddr          *net.UDPAddr
+	localPort           int
+	peerMessages        []Message
+	userMessages        []Message
+	allMessages         []Message
+	textInput           textinput.Model
+	discoveryAddr       net.UDPAddr
+	hoveredMessageIndex int
+	hoveredMessage      string
+	copied              bool
 }
 
 var keys = struct {
@@ -65,7 +70,10 @@ var keys = struct {
 	),
 }
 
-var pinkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+var (
+	accentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	buttonStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#00ff00"))
+)
 
 func sendMessage(conn *net.UDPConn, remoteAddr *net.UDPAddr, message string) tea.Cmd {
 	return func() tea.Msg {
@@ -126,7 +134,37 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
+		case tea.KeyDown:
+			if len(m.allMessages) > 0 {
+				m.hoveredMessageIndex = clamp(m.hoveredMessageIndex+1, 0, len(m.allMessages))
+				m.copied = false
+			}
+			if m.hoveredMessageIndex < len(m.allMessages) {
+				m.hoveredMessage = m.allMessages[m.hoveredMessageIndex].text
+			} else {
+				m.hoveredMessage = ""
+			}
+			return m, nil
+
+		case tea.KeyUp:
+			if len(m.allMessages) > 0 {
+				m.hoveredMessageIndex = clamp(m.hoveredMessageIndex-1, 0, len(m.allMessages))
+				m.copied = false
+			}
+			if m.hoveredMessageIndex < len(m.allMessages) {
+				m.hoveredMessage = m.allMessages[m.hoveredMessageIndex].text
+			} else {
+				m.hoveredMessage = ""
+			}
+			return m, nil
+
 		case tea.KeyEnter:
+			if m.hoveredMessageIndex < len(m.allMessages) && len(m.allMessages) > 0 {
+				_ = clipboard.WriteAll(m.hoveredMessage)
+				m.copied = true
+				return m, nil
+			}
+
 			input := m.textInput.Value()
 			if input == "" {
 				return m, nil
@@ -141,14 +179,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.Reset()
 				return m, requestAddress(m.conn, m.discoveryAddr)
 			default:
+				m.hoveredMessageIndex++
+
 				m.mu.Lock()
 				m.userMessages = append(m.userMessages, Message{
 					time: time.Now(),
-					ip:   pinkStyle.Render("(You)") + " localhost",
+					ip:   accentStyle.Render("(You)") + " localhost",
 					port: m.localPort,
 					text: input,
 				})
+				m.allMessages = append([]Message{}, append(m.peerMessages, m.userMessages...)...)
+				// Sort the combined slice by timestamp
+				sort.Slice(m.allMessages, func(i, j int) bool {
+					return m.allMessages[i].time.Before(m.allMessages[j].time)
+				})
 				m.mu.Unlock()
+				m.copied = false
 
 				m.textInput.Reset()
 				return m, sendMessage(m.conn, m.remoteAddr, input)
@@ -167,27 +213,28 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Handle incoming peer messages
 	case Response:
+		m.hoveredMessageIndex++
+
 		if strings.HasPrefix(msg.text, "addr:") {
 			var addr string
 			_, _ = fmt.Sscanf(msg.text, "addr:%s", &addr)
 			msg = Response{
 				time: msg.time,
-				ip:   pinkStyle.Render("(SYSTEM)") + " " + msg.ip,
+				ip:   accentStyle.Render("(SYSTEM)") + " " + msg.ip,
 				port: msg.port,
 				text: fmt.Sprintf("Your external address is %s", addr),
 			}
-			// m.mu.Lock()
-			// m.peerMessages = append(m.peerMessages, Message(msg))
-			// m.mu.Unlock()
-			// return m, tea.Batch(
-			// 	sendMessage(m.conn, m.remoteAddr, fmt.Sprintf("%s My external address is %s", pinkStyle.Render("SYSTEM:"), addr)),
-			// 	waitForMessages(m.sub),
-			// )
-			// } else {
 		}
+
 		m.mu.Lock()
 		m.peerMessages = append(m.peerMessages, Message(msg))
+		m.allMessages = append([]Message{}, append(m.peerMessages, m.userMessages...)...)
+		// Sort the combined slice by timestamp
+		sort.Slice(m.allMessages, func(i, j int) bool {
+			return m.allMessages[i].time.Before(m.allMessages[j].time)
+		})
 		m.mu.Unlock()
+
 		return m, waitForMessages(m.sub)
 
 	// Handle any other events
@@ -202,24 +249,35 @@ func (m *Model) View() string {
 
 	var output string
 
-	allMessages := append([]Message{}, append(m.peerMessages, m.userMessages...)...)
+	// debug
+	// output += "currentMessageIndex: " + strconv.Itoa(m.hoveredMessageIndex)
+	// output += "\nhoveredMessage: " + m.hoveredMessage
+	// output += "\ncopied: " + strconv.FormatBool(m.copied)
+	// output += "\ntextInput.Value(): " + m.textInput.Value() + "\n\n"
 
-	// Sort the combined slice by timestamp
-	sort.Slice(allMessages, func(i, j int) bool {
-		return allMessages[i].time.Before(allMessages[j].time)
-	})
+	var copyButton string
+	if m.copied {
+		copyButton = buttonStyle.Render("Copied!")
+	} else {
+		copyButton = buttonStyle.Render("Copy")
+	}
 
 	// print every message like [timestamp] ip:port> text
-	for _, message := range allMessages {
-		output += fmt.Sprintf("%s%s%s %s:%d%s %s\n",
-			pinkStyle.Render("["),
+	for i, message := range m.allMessages {
+		output += fmt.Sprintf("%s%s%s %s:%d%s %s",
+			accentStyle.Render("["),
 			message.time.Format("15:04:05"),
-			pinkStyle.Render("]"),
+			accentStyle.Render("]"),
 			message.ip,
 			message.port,
-			pinkStyle.Render(">"),
+			accentStyle.Render(">"),
 			message.text,
 		)
+		if i == m.hoveredMessageIndex {
+			output += fmt.Sprintf(" %s\n", copyButton)
+		} else {
+			output += "\n"
+		}
 	}
 
 	output += fmt.Sprintf("\n%s", m.textInput.View())
@@ -289,8 +347,8 @@ func main() {
 	ti.Width = 50
 
 	// Customize the cursor
-	ti.Cursor.Style = pinkStyle
-	ti.PromptStyle = pinkStyle
+	ti.Cursor.Style = accentStyle
+	ti.PromptStyle = accentStyle
 
 	if _, err := tea.NewProgram(&Model{
 		done:         done,
@@ -309,4 +367,14 @@ func main() {
 		fmt.Printf("Uh oh, there was an error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func clamp(value, min, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }
