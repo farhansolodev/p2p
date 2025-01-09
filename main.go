@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	// "golang.org/x/sys/windows"
 )
 
 func punchHoles(conn *net.UDPConn, remoteAddr *net.UDPAddr, done chan struct{}) {
@@ -44,6 +45,11 @@ type Message struct {
 
 type Response Message
 
+// type ResizeMsg struct {
+// 	rows int
+// 	cols int
+// }
+
 type Model struct {
 	mu                  sync.Mutex    // Protects concurrent access to messages
 	done                chan struct{} // Signals shutdown to background goroutines
@@ -55,10 +61,12 @@ type Model struct {
 	userMessages        []Message
 	allMessages         []Message
 	textInput           textinput.Model
-	discoveryAddr       net.UDPAddr
+	discoveryAddr       *net.UDPAddr
 	hoveredMessageIndex int
 	hoveredMessage      string
 	copied              bool
+	// rows                int
+	// cols                int
 }
 
 var keys = struct {
@@ -66,14 +74,40 @@ var keys = struct {
 }{
 	Escape: key.NewBinding(
 		key.WithKeys("esc"),
-		key.WithHelp("esc", "close"),
 	),
 }
 
 var (
-	accentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
-	buttonStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#00ff00"))
+	bubblePinkAccentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	buttonStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#00ff00"))
 )
+
+// func pollConsoleSize(p *tea.Program) {
+// 	var lastCols, lastRows int
+// 	for {
+// 		cols, rows := getConsoleSize()
+// 		if cols != lastCols || rows != lastRows {
+// 			p.Send(ResizeMsg{
+// 				cols: cols,
+// 				rows: rows,
+// 			})
+// 			lastCols = cols
+// 			lastRows = rows
+// 		}
+// 		time.Sleep(200 * time.Millisecond) // maybe adjust polling interval
+// 	}
+// }
+
+// func getConsoleSize() (cols, rows int) {
+// 	var info windows.ConsoleScreenBufferInfo
+// 	handle := windows.Handle(os.Stdout.Fd())
+// 	err := windows.GetConsoleScreenBufferInfo(handle, &info)
+// 	if err == nil {
+// 		cols = int(info.Size.X)
+// 		rows = int(info.Size.Y)
+// 	}
+// 	return
+// }
 
 func sendMessage(conn *net.UDPConn, remoteAddr *net.UDPAddr, message string) tea.Cmd {
 	return func() tea.Msg {
@@ -118,8 +152,8 @@ func waitForMessages(sub chan Message) tea.Cmd {
 	}
 }
 
-func requestAddress(conn *net.UDPConn, discoveryAddr net.UDPAddr) tea.Cmd {
-	_, _ = conn.WriteToUDP([]byte("whoami"), &discoveryAddr)
+func requestAddress(conn *net.UDPConn, discoveryAddr *net.UDPAddr) tea.Cmd {
+	_, _ = conn.WriteToUDP([]byte("whoami"), discoveryAddr)
 	return nil
 }
 
@@ -184,7 +218,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mu.Lock()
 				m.userMessages = append(m.userMessages, Message{
 					time: time.Now(),
-					ip:   accentStyle.Render("(You)") + " localhost",
+					ip:   bubblePinkAccentStyle.Render("(You)") + " localhost",
 					port: m.localPort,
 					text: input,
 				})
@@ -220,7 +254,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_, _ = fmt.Sscanf(msg.text, "addr:%s", &addr)
 			msg = Response{
 				time: msg.time,
-				ip:   accentStyle.Render("(SYSTEM)") + " " + msg.ip,
+				ip:   bubblePinkAccentStyle.Render("(SYSTEM)") + " " + msg.ip,
 				port: msg.port,
 				text: addr,
 			}
@@ -236,6 +270,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mu.Unlock()
 
 		return m, waitForMessages(m.sub)
+
+	// case ResizeMsg:
+	// 	m.rows = msg.rows
+	// 	m.cols = msg.cols - 3 // -3 because of the "> " prompt
+	// 	m.textInput.Width = m.cols
+	// 	return m, nil
 
 	// Handle any other events
 	default:
@@ -253,7 +293,9 @@ func (m *Model) View() string {
 	// output += "currentMessageIndex: " + strconv.Itoa(m.hoveredMessageIndex)
 	// output += "\nhoveredMessage: " + m.hoveredMessage
 	// output += "\ncopied: " + strconv.FormatBool(m.copied)
-	// output += "\ntextInput.Value(): " + m.textInput.Value() + "\n\n"
+	// output += "\ntextInput.Value(): " + m.textInput.Value()
+	// output += fmt.Sprintf("rows:%d cols:%d", m.rows, m.cols)
+	// output += "\n\n"
 
 	var copyButton string
 	if m.copied {
@@ -345,20 +387,20 @@ func main() {
 
 	done := make(chan struct{})
 
-	// Start the ping goroutine
+	// Start punching UDP holes in our router towards our peer
 	go punchHoles(conn, remoteAddr, done)
 
 	ti := textinput.New()
 	ti.Placeholder = "Type something..."
 	ti.Focus()
-	ti.CharLimit = 156
+	ti.CharLimit = 256
 	ti.Width = 50
 
 	// Customize the cursor
-	ti.Cursor.Style = accentStyle
-	ti.PromptStyle = accentStyle
+	ti.Cursor.Style = bubblePinkAccentStyle
+	ti.PromptStyle = bubblePinkAccentStyle
 
-	if _, err := tea.NewProgram(&Model{
+	p := tea.NewProgram(&Model{
 		done:         done,
 		localPort:    *localPort,
 		conn:         conn,
@@ -367,11 +409,18 @@ func main() {
 		peerMessages: []Message{},
 		userMessages: []Message{},
 		textInput:    ti,
-		discoveryAddr: *&net.UDPAddr{
+		discoveryAddr: &net.UDPAddr{
 			IP:   net.ParseIP(discovery_ip),
 			Port: 50000,
 		},
-	}).Run(); err != nil {
+	})
+
+	// start polling the console's rows and columns
+	// go func() {
+	// 	pollConsoleSize(p)
+	// }()
+
+	if _, err := p.Run(); err != nil {
 		fmt.Printf("Uh oh, there was an error: %v\n", err)
 		os.Exit(1)
 	}
