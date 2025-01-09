@@ -336,12 +336,10 @@ func (m *Model) View() string {
 }
 
 func main() {
-	// Define flags
 	localPort := flag.Int("lport", 0, "Local port to bind to")
 	remoteIP := flag.String("rip", "", "Remote IP address")
 	remotePort := flag.Int("rport", 0, "Remote port")
 
-	// Parse flags
 	flag.Parse()
 
 	// Validate flags
@@ -359,13 +357,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create a UDP address for the local endpoint
 	localAddr := &net.UDPAddr{
 		IP:   net.ParseIP("0.0.0.0"),
 		Port: *localPort,
 	}
 
-	// Create a UDP connection bound to the specific interface and port
 	conn, err := net.ListenUDP("udp", localAddr)
 	if err != nil {
 		fmt.Printf("Failed to bind to port %d: %v\n", *localPort, err)
@@ -373,13 +369,11 @@ func main() {
 	}
 	defer conn.Close()
 
-	// Define the remote endpoint
 	remoteAddr := &net.UDPAddr{
 		IP:   net.ParseIP(*remoteIP),
 		Port: *remotePort,
 	}
 
-	// Validate remote IP
 	if remoteAddr.IP == nil {
 		fmt.Printf("Invalid remote IP address: %s\n", *remoteIP)
 		os.Exit(1)
@@ -396,7 +390,6 @@ func main() {
 	ti.CharLimit = 256
 	ti.Width = 50
 
-	// Customize the cursor
 	ti.Cursor.Style = bubblePinkAccentStyle
 	ti.PromptStyle = bubblePinkAccentStyle
 
@@ -416,9 +409,7 @@ func main() {
 	})
 
 	// start polling the console's rows and columns
-	// go func() {
-	// 	pollConsoleSize(p)
-	// }()
+	// go pollConsoleSize(p)
 
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Uh oh, there was an error: %v\n", err)
