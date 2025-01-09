@@ -11,15 +11,16 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	// "golang.org/x/sys/windows"
 )
 
+var punchInterval = 500 * time.Millisecond
+
 func punchHoles(conn *net.UDPConn, remoteAddr *net.UDPAddr, done chan struct{}) {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(punchInterval)
 	defer ticker.Stop()
 
 	for {
@@ -35,52 +36,6 @@ func punchHoles(conn *net.UDPConn, remoteAddr *net.UDPAddr, done chan struct{}) 
 		}
 	}
 }
-
-type Message struct {
-	time time.Time
-	ip   string
-	port int
-	text string
-}
-
-type Response Message
-
-// type ResizeMsg struct {
-// 	rows int
-// 	cols int
-// }
-
-type Model struct {
-	mu                  sync.Mutex    // Protects concurrent access to messages
-	done                chan struct{} // Signals shutdown to background goroutines
-	sub                 chan Message  // Channel for receiving message notifications
-	conn                *net.UDPConn
-	remoteAddr          *net.UDPAddr
-	localPort           int
-	peerMessages        []Message
-	userMessages        []Message
-	allMessages         []Message
-	textInput           textinput.Model
-	discoveryAddr       *net.UDPAddr
-	hoveredMessageIndex int
-	hoveredMessage      string
-	copied              bool
-	// rows                int
-	// cols                int
-}
-
-var keys = struct {
-	Escape key.Binding
-}{
-	Escape: key.NewBinding(
-		key.WithKeys("esc"),
-	),
-}
-
-var (
-	bubblePinkAccentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
-	buttonStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#00ff00"))
-)
 
 // func pollConsoleSize(p *tea.Program) {
 // 	var lastCols, lastRows int
@@ -109,6 +64,57 @@ var (
 // 	return
 // }
 
+type Message struct {
+	time      time.Time
+	ip        string
+	port      int
+	text      string
+	delivered bool
+}
+
+type (
+	Response Message
+	Ping     Message
+)
+
+type Model struct {
+	mu   sync.Mutex    // Protects concurrent access to messages
+	done chan struct{} // Signals shutdown to background goroutines
+
+	sub          chan Response // Channel for receiving message notifications
+	pingSub      chan Ping
+	lastPingTime *time.Time
+
+	conn          *net.UDPConn
+	remoteAddr    *net.UDPAddr
+	localPort     int
+	discoveryAddr *net.UDPAddr
+
+	peerMessages []Message
+	userMessages []Message
+	allMessages  []Message
+
+	hoveredMessageIndex int
+	hoveredMessage      string
+	copied              bool
+
+	textInput textinput.Model
+
+	// rows int
+	// cols int
+}
+
+// type ResizeMsg struct {
+// 	rows int
+// 	cols int
+// }
+
+var (
+	bubblePinkAccentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	buttonStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#00ff00"))
+)
+
+// A command to send a message to the remote peer
 func sendMessage(conn *net.UDPConn, remoteAddr *net.UDPAddr, message string) tea.Cmd {
 	return func() tea.Msg {
 		_, _ = conn.WriteToUDP([]byte(message), remoteAddr)
@@ -116,7 +122,8 @@ func sendMessage(conn *net.UDPConn, remoteAddr *net.UDPAddr, message string) tea
 	}
 }
 
-func listenForMessages(sub chan Message, conn *net.UDPConn, done chan struct{}) tea.Cmd {
+// A command to listen for messages on our local port
+func listenForMessages(sub chan<- Response, pingSub chan<- Ping, conn *net.UDPConn, done <-chan struct{}) tea.Cmd {
 	return func() tea.Msg {
 		buffer := make([]byte, 1024)
 		for {
@@ -132,26 +139,41 @@ func listenForMessages(sub chan Message, conn *net.UDPConn, done chan struct{}) 
 					continue
 				}
 
-				if string(buffer[:n]) != "ping" {
-					sub <- Message{
+				if string(buffer[:n]) == "ping" {
+					pingSub <- Ping(Message{
 						time: time.Now(),
 						ip:   addr.IP.String(),
 						port: addr.Port,
 						text: string(buffer[:n]),
-					}
+					})
+				} else {
+					sub <- Response(Message{
+						time: time.Now(),
+						ip:   addr.IP.String(),
+						port: addr.Port,
+						text: string(buffer[:n]),
+					})
 				}
 			}
 		}
 	}
 }
 
-// A command that waits for the messages on a channel.
-func waitForMessages(sub chan Message) tea.Cmd {
+// A command that waits for messages on a channel.
+func waitForMessages(sub <-chan Response) tea.Cmd {
 	return func() tea.Msg {
-		return Response(<-sub)
+		return <-sub
 	}
 }
 
+// A command that waits for pings on a channel.
+func waitForPings(sub <-chan Ping) tea.Cmd {
+	return func() tea.Msg {
+		return <-sub
+	}
+}
+
+// A command to request the discovery server for our external address
 func requestAddress(conn *net.UDPConn, discoveryAddr *net.UDPAddr) tea.Cmd {
 	_, _ = conn.WriteToUDP([]byte("whoami"), discoveryAddr)
 	return nil
@@ -159,8 +181,9 @@ func requestAddress(conn *net.UDPConn, discoveryAddr *net.UDPAddr) tea.Cmd {
 
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
-		listenForMessages(m.sub, m.conn, m.done),
+		listenForMessages(m.sub, m.pingSub, m.conn, m.done),
 		waitForMessages(m.sub),
+		waitForPings(m.pingSub),
 	)
 }
 
@@ -193,34 +216,47 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case tea.KeyEnter:
+			// enter only copies to clipboard
 			if m.hoveredMessageIndex < len(m.allMessages) && len(m.allMessages) > 0 {
 				_ = clipboard.WriteAll(m.hoveredMessage)
 				m.copied = true
 				return m, nil
 			}
 
+			// enter does nothing
 			input := m.textInput.Value()
 			if input == "" {
 				return m, nil
 			}
+			// enter quits application
 			if input == "/quit" {
 				close(m.done)
 				return m, tea.Quit
 			}
 
 			switch input {
+			// enter gets our external address
 			case "/getaddr":
 				m.textInput.Reset()
 				return m, requestAddress(m.conn, m.discoveryAddr)
+				// enter sends message
 			default:
 				m.hoveredMessageIndex++
+				m.copied = false
+				m.textInput.Reset()
+
+				var delivered bool
+				if m.lastPingTime != nil {
+					delivered = time.Since(*m.lastPingTime) <= punchInterval
+				}
 
 				m.mu.Lock()
 				m.userMessages = append(m.userMessages, Message{
-					time: time.Now(),
-					ip:   bubblePinkAccentStyle.Render("(You)") + " localhost",
-					port: m.localPort,
-					text: input,
+					time:      time.Now(),
+					ip:        bubblePinkAccentStyle.Render("(You)") + " localhost",
+					port:      m.localPort,
+					text:      input,
+					delivered: delivered,
 				})
 				m.allMessages = append([]Message{}, append(m.peerMessages, m.userMessages...)...)
 				// Sort the combined slice by timestamp
@@ -228,9 +264,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.allMessages[i].time.Before(m.allMessages[j].time)
 				})
 				m.mu.Unlock()
-				m.copied = false
 
-				m.textInput.Reset()
 				return m, sendMessage(m.conn, m.remoteAddr, input)
 			}
 
@@ -271,6 +305,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, waitForMessages(m.sub)
 
+	case Ping:
+		m.lastPingTime = &msg.time
+		return m, waitForPings(m.pingSub)
+
 	// case ResizeMsg:
 	// 	m.rows = msg.rows
 	// 	m.cols = msg.cols - 3 // -3 because of the "> " prompt
@@ -294,7 +332,8 @@ func (m *Model) View() string {
 	// output += "\nhoveredMessage: " + m.hoveredMessage
 	// output += "\ncopied: " + strconv.FormatBool(m.copied)
 	// output += "\ntextInput.Value(): " + m.textInput.Value()
-	// output += fmt.Sprintf("rows:%d cols:%d", m.rows, m.cols)
+	// output += fmt.Sprintf("\nrows:%d cols:%d", m.rows, m.cols)
+	// output += fmt.Sprintf("\nlast ping: %v", m.lastPingTime)
 	// output += "\n\n"
 
 	var copyButton string
@@ -322,12 +361,15 @@ func (m *Model) View() string {
 			message.time.Format("15:04"),
 			bubblePinkAccentStyle.Render("]"),
 		)
+		if message.delivered {
+			output += " ✓✓"
+		}
 		if i == m.hoveredMessageIndex {
 			output += fmt.Sprintf(" %s\n", copyButton)
 		} else {
 			output += "\n"
 		}
-		output += message.text + "\n\n"
+		output += fmt.Sprintf("%s %s\n\n", bubblePinkAccentStyle.Render("|"), message.text)
 	}
 
 	output += fmt.Sprintf("\n%s", m.textInput.View())
@@ -398,7 +440,8 @@ func main() {
 		localPort:    *localPort,
 		conn:         conn,
 		remoteAddr:   remoteAddr,
-		sub:          make(chan Message),
+		sub:          make(chan Response),
+		pingSub:      make(chan Ping),
 		peerMessages: []Message{},
 		userMessages: []Message{},
 		textInput:    ti,
