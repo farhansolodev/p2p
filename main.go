@@ -264,20 +264,28 @@ func (m *Model) View() string {
 
 	// print every message like [timestamp] ip:port> text
 	for i, message := range m.allMessages {
-		output += fmt.Sprintf("%s%s%s %s:%d%s %s",
-			accentStyle.Render("["),
-			message.time.Format("15:04:05"),
-			accentStyle.Render("]"),
+		// output += fmt.Sprintf("%s%s%s %s:%d%s %s",
+		// 	bubblePinkAccentStyle.Render("["),
+		// 	message.time.Format("15:04:05"),
+		// 	bubblePinkAccentStyle.Render("]"),
+		// 	message.ip,
+		// 	message.port,
+		// 	bubblePinkAccentStyle.Render(">"),
+		// 	message.text,
+		// )
+		output += fmt.Sprintf("%s:%d %s%s%s",
 			message.ip,
 			message.port,
-			accentStyle.Render(">"),
-			message.text,
+			bubblePinkAccentStyle.Render("["),
+			message.time.Format("15:04"),
+			bubblePinkAccentStyle.Render("]"),
 		)
 		if i == m.hoveredMessageIndex {
 			output += fmt.Sprintf(" %s\n", copyButton)
 		} else {
 			output += "\n"
 		}
+		output += message.text + "\n\n"
 	}
 
 	output += fmt.Sprintf("\n%s", m.textInput.View())
