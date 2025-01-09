@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wrap"
 	// "golang.org/x/sys/windows"
 )
 
@@ -112,6 +113,7 @@ type Model struct {
 var (
 	bubblePinkAccentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 	buttonStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(lipgloss.Color("#00ff00"))
+	width                 = 80
 )
 
 // A command to send a message to the remote peer
@@ -229,7 +231,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			// enter quits application
-			if input == "/quit" {
+			if input == "/q" || input == "/quit" {
 				close(m.done)
 				return m, tea.Quit
 			}
@@ -369,7 +371,7 @@ func (m *Model) View() string {
 		} else {
 			output += "\n"
 		}
-		output += fmt.Sprintf("%s %s\n\n", bubblePinkAccentStyle.Render("|"), message.text)
+		output += wrap.String(fmt.Sprintf("%s %s\n\n", bubblePinkAccentStyle.Render("|"), message.text), width)
 	}
 
 	output += fmt.Sprintf("\n%s", m.textInput.View())
@@ -430,7 +432,7 @@ func main() {
 	ti.Placeholder = "Type something..."
 	ti.Focus()
 	ti.CharLimit = 256
-	ti.Width = 50
+	ti.Width = width
 
 	ti.Cursor.Style = bubblePinkAccentStyle
 	ti.PromptStyle = bubblePinkAccentStyle
